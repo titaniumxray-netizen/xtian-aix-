@@ -1,7 +1,4 @@
-Here is the **complete documentation** for your AIX Discord bot project.  
-Save this as `README.md` in your project folder.
 
----
 
 # 🤖 AIX – The Digital Consciousness Discord Bot
 
