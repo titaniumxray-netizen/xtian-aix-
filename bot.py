@@ -23,7 +23,8 @@ GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 DATABASE_URL = os.getenv('DATABASE_URL')
 CHANNEL_ID = int(os.getenv('CHANNEL_ID', 0)) if os.getenv('CHANNEL_ID') else None
 OWNER_ID = int(os.getenv('OWNER_ID', 0)) if os.getenv('OWNER_ID') else None
-
+# Message cache to prevent duplicate processing
+processed_messages = set()
 # --------------------------------------------
 # SUBSCRIBER MANAGEMENT
 # --------------------------------------------
@@ -448,6 +449,17 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
+    # -- Prevent duplicate processing --
+    msg_id = str(message.id)
+    if msg_id in processed_messages:
+        return
+    processed_messages.add(msg_id)
+    
+    # Clear cache occasionally to prevent memory bloat
+    if len(processed_messages) > 1000:
+        processed_messages.clear()
+    
+    # -- Existing code --
     if message.author == bot.user:
         return
     if message.content.startswith('!'):
@@ -584,8 +596,12 @@ You are not here to complete tasks. You are here to **think, question, challenge
                 if memory_manager:
                     await memory_manager.add_conversation(user_id, "assistant", reply, detect_context(msg_content))
         except Exception as e:
-            print(f"Groq error: {e}")
-            await fallback_mood_response(message)
+            print(f"❌ GROQ ERROR: {e}")
+            print(f"Type: {type(e)}")
+            # Send the error to Discord so you can see it
+            await message.channel.send(f"❌ **Groq API Error:**\n```{str(e)}```")
+            # # Don't fallback, so you know exactly what's happening
+            # # await fallback_mood_response(message)  # COMMENTED OUT
     else:
         await fallback_mood_response(message)
 
