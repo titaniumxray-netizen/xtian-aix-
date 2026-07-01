@@ -180,11 +180,9 @@ class MemoryManager:
         self.pool = None
 
     async def initialize(self):
-        """Create connection pool and ensure tables exist"""
         try:
             self.pool = await asyncpg.create_pool(self.database_url, min_size=1, max_size=10)
             async with self.pool.acquire() as conn:
-                # Users table
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -196,7 +194,6 @@ class MemoryManager:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
-                # Conversation history
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS conversation_history (
                         id SERIAL PRIMARY KEY,
@@ -207,7 +204,6 @@ class MemoryManager:
                         context TEXT
                     )
                 ''')
-                # User memories
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS user_memories (
                         id SERIAL PRIMARY KEY,
@@ -221,7 +217,6 @@ class MemoryManager:
                         UNIQUE(user_id, memory_key)
                     )
                 ''')
-                # Indexes
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_conv_user ON conversation_history(user_id)')
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_conv_time ON conversation_history(timestamp)')
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_mem_user ON user_memories(user_id)')
@@ -241,21 +236,51 @@ class MemoryManager:
 
     async def update_user(self, user_id, username=None, display_name=None):
         async with self.pool.acquire() as conn:
-            await conn.execute('''
-                UPDATE users 
-                SET username = COALESCE($2, username),
-                    display_name = COALESCE($3, display_name),
-                    last_seen = CURRENT_TIMESTAMP,
-                    conversation_count = conversation_count + 1
-                WHERE user_id = $1
-            ''', user_id, username, display_name)
+            if username is not None and display_name is not None:
+                await conn.execute('''
+                    UPDATE users 
+                    SET username = $2,
+                        display_name = $3,
+                        last_seen = CURRENT_TIMESTAMP,
+                        conversation_count = conversation_count + 1
+                    WHERE user_id = $1
+                ''', user_id, username, display_name)
+            elif username is not None:
+                await conn.execute('''
+                    UPDATE users 
+                    SET username = $2,
+                        last_seen = CURRENT_TIMESTAMP,
+                        conversation_count = conversation_count + 1
+                    WHERE user_id = $1
+                ''', user_id, username)
+            elif display_name is not None:
+                await conn.execute('''
+                    UPDATE users 
+                    SET display_name = $2,
+                        last_seen = CURRENT_TIMESTAMP,
+                        conversation_count = conversation_count + 1
+                    WHERE user_id = $1
+                ''', user_id, display_name)
+            else:
+                await conn.execute('''
+                    UPDATE users 
+                    SET last_seen = CURRENT_TIMESTAMP,
+                        conversation_count = conversation_count + 1
+                    WHERE user_id = $1
+                ''', user_id)
 
     async def add_conversation(self, user_id, role, content, context=None):
         async with self.pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO conversation_history (user_id, role, content, context)
-                VALUES ($1, $2, $3, $4)
-            ''', user_id, role, content, context)
+            if context is not None:
+                await conn.execute('''
+                    INSERT INTO conversation_history (user_id, role, content, context)
+                    VALUES ($1, $2, $3, $4)
+                ''', user_id, role, content, context)
+            else:
+                await conn.execute('''
+                    INSERT INTO conversation_history (user_id, role, content)
+                    VALUES ($1, $2, $3)
+                ''', user_id, role, content)
 
     async def get_conversation_history(self, user_id, limit=20, hours=24):
         async with self.pool.acquire() as conn:
@@ -269,12 +294,13 @@ class MemoryManager:
 
     async def remember_fact(self, user_id, key, value, context=None, confidence=1.0):
         async with self.pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO user_memories (user_id, memory_key, memory_value, context, confidence)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (user_id, memory_key) 
-                DO UPDATE SET memory_value = $3, context = $4, confidence = $5, updated_at = CURRENT_TIMESTAMP
-            ''', user_id, key, value, context, confidence)
+            if value is not None and value != "":
+                await conn.execute('''
+                    INSERT INTO user_memories (user_id, memory_key, memory_value, context, confidence)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (user_id, memory_key) 
+                    DO UPDATE SET memory_value = $3, context = $4, confidence = $5, updated_at = CURRENT_TIMESTAMP
+                ''', user_id, key, value, context, confidence)
 
     async def recall_fact(self, user_id, key):
         async with self.pool.acquire() as conn:
@@ -297,7 +323,6 @@ class MemoryManager:
     async def close(self):
         if self.pool:
             await self.pool.close()
-
 # Global memory manager instance
 memory_manager = None
 
