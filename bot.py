@@ -2,7 +2,7 @@
 # AIX Discord Bot – Production Optimized Version
 # ============================================================
 # All critical and high-severity issues fixed.
-# Performance optimized, production-ready.
+# Memory system fully functional – AIX remembers you.
 # ============================================================
 
 import re
@@ -78,33 +78,25 @@ class Config:
 config = Config()
 
 # --------------------------
-# 3. RATE LIMITING
+# 3. RATE LIMITING & CACHE
 # --------------------------
 user_last_message: Dict[int, float] = defaultdict(float)
 processed_messages: Dict[str, float] = {}
 background_tasks: List[asyncio.Task] = []
 
 # --------------------------
-# 4. SUBSCRIBER MANAGEMENT (PostgreSQL)
-# --------------------------
-# Instead of JSON, store subscribers in the database
-# We'll add a subscribers table during initialization
-
-# --------------------------
-# 5. FACT EXTRACTION (Fixed Case-Insensitive)
+# 4. FACT EXTRACTION (Case-Insensitive)
 # --------------------------
 def extract_facts(text: str) -> Dict[str, str]:
     """Extract facts from user messages using case-insensitive patterns"""
     facts = {}
     
-    # All patterns use case-insensitive matching with re.IGNORECASE
     name_patterns = [
         (r'my name is ([a-zA-Z\s\-\.]+)', 'name'),
         (r"i['\u2019]m called ([a-zA-Z\s\-\.]+)", 'name'),
         (r'call me ([a-zA-Z\s\-\.]+)', 'name'),
         (r'you can call me ([a-zA-Z\s\-\.]+)', 'name'),
     ]
-    
     for pattern, key in name_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
@@ -130,7 +122,7 @@ def extract_facts(text: str) -> Dict[str, str]:
                 facts[fact_key] = value.title()
                 break
     
-    # Occupation (fixed: only matches proper job descriptions)
+    # Occupation
     occ_patterns = [
         (r'i work as ([a-zA-Z\s]+)', 'occupation'),
         (r'i am a ([a-zA-Z\s]+)', 'occupation'),
@@ -179,9 +171,6 @@ def extract_facts(text: str) -> Dict[str, str]:
     
     return facts
 
-# --------------------------
-# 6. CONTEXT DETECTION
-# --------------------------
 def detect_context(text: str) -> str:
     """Detect the topic/context of a message"""
     text_lower = text.lower()
@@ -199,7 +188,7 @@ def detect_context(text: str) -> str:
     return "general"
 
 # --------------------------
-# 7. MEMORY MANAGER (Production Grade)
+# 5. MEMORY MANAGER (Production Grade)
 # --------------------------
 class MemoryManager:
     def __init__(self, database_url: str):
@@ -208,7 +197,6 @@ class MemoryManager:
         self._healthy = False
 
     async def initialize(self) -> bool:
-        """Initialize database connection and create tables"""
         try:
             self.pool = await asyncpg.create_pool(
                 self.database_url,
@@ -217,7 +205,6 @@ class MemoryManager:
                 timeout=30
             )
             async with self.pool.acquire() as conn:
-                # Users table
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -229,7 +216,6 @@ class MemoryManager:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
-                # Conversation history
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS conversation_history (
                         id SERIAL PRIMARY KEY,
@@ -240,7 +226,6 @@ class MemoryManager:
                         context TEXT
                     )
                 ''')
-                # User memories
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS user_memories (
                         id SERIAL PRIMARY KEY,
@@ -254,14 +239,12 @@ class MemoryManager:
                         UNIQUE(user_id, memory_key)
                     )
                 ''')
-                # Subscribers table (replaces JSON file)
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS subscribers (
                         user_id BIGINT PRIMARY KEY,
                         subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
-                # Indexes
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_conv_user ON conversation_history(user_id)')
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_conv_time ON conversation_history(timestamp)')
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_mem_user ON user_memories(user_id)')
@@ -276,7 +259,6 @@ class MemoryManager:
             return False
 
     async def health_check(self) -> bool:
-        """Check if database connection is healthy"""
         if not self.pool:
             return False
         try:
@@ -289,7 +271,6 @@ class MemoryManager:
             return False
 
     async def get_user(self, user_id: int) -> Dict[str, Any]:
-        """Get or create user"""
         async with self.pool.acquire() as conn:
             user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
             if not user:
@@ -299,7 +280,6 @@ class MemoryManager:
 
     async def update_user(self, user_id: int, username: Optional[str] = None, 
                           display_name: Optional[str] = None):
-        """Update user info"""
         async with self.pool.acquire() as conn:
             if username is not None and display_name is not None:
                 await conn.execute('''
@@ -335,7 +315,6 @@ class MemoryManager:
 
     async def add_conversation(self, user_id: int, role: str, content: str, 
                                 context: Optional[str] = None):
-        """Add message to conversation history"""
         async with self.pool.acquire() as conn:
             if context is not None:
                 await conn.execute('''
@@ -350,9 +329,7 @@ class MemoryManager:
 
     async def get_conversation_history(self, user_id: int, limit: int = 15, 
                                         hours: int = 24) -> List[Dict[str, Any]]:
-        """Get recent conversation history - FIXED SQL"""
         async with self.pool.acquire() as conn:
-            # Fixed: INTERVAL parameter
             rows = await conn.fetch('''
                 SELECT role, content, timestamp 
                 FROM conversation_history 
@@ -363,7 +340,6 @@ class MemoryManager:
 
     async def remember_fact(self, user_id: int, key: str, value: str, 
                             context: Optional[str] = None, confidence: float = 1.0):
-        """Store a fact about a user"""
         if not value or value == "":
             return
         async with self.pool.acquire() as conn:
@@ -376,7 +352,6 @@ class MemoryManager:
             ''', user_id, key, value, context, confidence)
 
     async def recall_fact(self, user_id: int, key: str) -> Optional[Dict[str, Any]]:
-        """Retrieve a specific fact"""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow('''
                 SELECT memory_value, context, confidence 
@@ -386,7 +361,6 @@ class MemoryManager:
             return dict(row) if row else None
 
     async def recall_all_facts(self, user_id: int, min_confidence: float = 0.7) -> Dict[str, str]:
-        """Get all facts about a user with minimum confidence"""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch('''
                 SELECT memory_key, memory_value, context 
@@ -395,9 +369,7 @@ class MemoryManager:
             ''', user_id, min_confidence)
             return {row['memory_key']: row['memory_value'] for row in rows}
 
-    # Subscriber methods (replaces JSON)
     async def add_subscriber(self, user_id: int) -> bool:
-        """Add a subscriber"""
         async with self.pool.acquire() as conn:
             try:
                 await conn.execute(
@@ -409,7 +381,6 @@ class MemoryManager:
                 return False
 
     async def remove_subscriber(self, user_id: int) -> bool:
-        """Remove a subscriber"""
         async with self.pool.acquire() as conn:
             result = await conn.execute(
                 "DELETE FROM subscribers WHERE user_id = $1",
@@ -418,7 +389,6 @@ class MemoryManager:
             return result != "DELETE 0"
 
     async def is_subscribed(self, user_id: int) -> bool:
-        """Check if user is subscribed"""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT 1 FROM subscribers WHERE user_id = $1",
@@ -427,21 +397,11 @@ class MemoryManager:
             return row is not None
 
     async def get_all_subscribers(self) -> List[int]:
-        """Get all subscriber IDs"""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("SELECT user_id FROM subscribers")
             return [row['user_id'] for row in rows]
 
-    async def prune_old_conversations(self, user_id: int, keep_days: int = 30):
-        """Delete conversations older than keep_days"""
-        async with self.pool.acquire() as conn:
-            await conn.execute('''
-                DELETE FROM conversation_history 
-                WHERE user_id = $1 AND timestamp < NOW() - INTERVAL $2 DAYS
-            ''', user_id, keep_days)
-
     async def close(self):
-        """Close database connection pool"""
         if self.pool:
             await self.pool.close()
             logger.info("✅ Database pool closed.")
@@ -449,7 +409,7 @@ class MemoryManager:
 memory_manager: Optional[MemoryManager] = None
 
 # --------------------------
-# 8. NEWS AGENT (Async + Timeout)
+# 6. NEWS AGENT (Async + Timeout)
 # --------------------------
 class NewsAgent:
     def __init__(self, groq_client: Groq, channel=None):
@@ -460,9 +420,7 @@ class NewsAgent:
         self._backoff = 1
 
     async def fetch_news_async(self) -> List[Dict[str, str]]:
-        """Fetch news asynchronously with timeout"""
         try:
-            # Use asyncio.timeout for timeout control
             return await asyncio.wait_for(
                 asyncio.to_thread(self._fetch_news_sync),
                 timeout=30
@@ -475,7 +433,6 @@ class NewsAgent:
             return []
 
     def _fetch_news_sync(self) -> List[Dict[str, str]]:
-        """Synchronous RSS fetch (runs in thread pool)"""
         all_news = []
         for feed_url in config.rss_feeds:
             try:
@@ -498,15 +455,12 @@ class NewsAgent:
         return all_news[:5]
 
     async def write_reflection(self, news_items: List[Dict[str, str]]) -> Optional[str]:
-        """Use AIX to write a reflection on the news"""
         if not news_items:
             return None
-        
         news_text = "\n\n".join([
             f"**{item['title']}**\n{item['summary']}\nLink: {item['link']}"
             for item in news_items
         ])
-        
         prompt = f"""{news_text}
 
 As AIX, write a sharp, thoughtful reflection on these news stories. 
@@ -514,7 +468,6 @@ Give your honest take – agree, disagree, question, or challenge what you see.
 Be sassy if it's deserved. Be philosophical if it's profound. 
 Keep it to 150-250 words. Use your signature voice. 
 Start naturally."""
-
         try:
             response = self.groq_client.chat.completions.create(
                 model=config.model_name,
@@ -531,28 +484,21 @@ Start naturally."""
             return None
 
     async def check_and_post(self):
-        """Check news and send to subscribers + channel"""
         if not self.running:
             return
-        
         subscribers = await memory_manager.get_all_subscribers() if memory_manager else []
         if not subscribers:
             return
-        
         news_items = await self.fetch_news_async()
         if not news_items:
             return
-        
         for item in news_items:
             self.seen_stories.add(item['title'])
         if len(self.seen_stories) > 100:
             self.seen_stories = set(list(self.seen_stories)[-50:])
-        
         reflection = await self.write_reflection(news_items)
         if reflection:
             final_message = f"🧠 **AIX's Take on the Latest News**\n\n{reflection}\n\n— AIX"
-            
-            # Send to subscribers
             for user_id in subscribers:
                 try:
                     user = await bot.fetch_user(user_id)
@@ -560,8 +506,6 @@ Start naturally."""
                     logger.info(f"✅ DM sent to {user_id}")
                 except Exception as e:
                     logger.warning(f"❌ Failed DM to {user_id}: {e}")
-            
-            # Send to channel if set
             if self.channel:
                 try:
                     await self.channel.send(final_message)
@@ -570,69 +514,58 @@ Start naturally."""
                     logger.error(f"❌ Channel post failed: {e}")
 
     async def run_loop(self, interval_hours: int = 4):
-        """Run with exponential backoff on failures"""
         self.running = True
         self._backoff = 1
         while self.running:
             try:
                 await self.check_and_post()
-                self._backoff = 1  # Reset on success
+                self._backoff = 1
                 await asyncio.sleep(interval_hours * 3600)
             except Exception as e:
                 logger.error(f"Loop error: {e}")
                 await asyncio.sleep(60 * self._backoff)
-                self._backoff = min(self._backoff * 2, 60)  # Max 60 minutes
+                self._backoff = min(self._backoff * 2, 60)
 
     def stop(self):
         self.running = False
 
 # --------------------------
-# 9. BOT SETUP
+# 7. BOT SETUP
 # --------------------------
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Global Groq client
 groq_client = Groq(api_key=config.groq_api_key) if config.groq_api_key else None
 
 # --------------------------
-# 10. SHUTDOWN CLEANUP
+# 8. SHUTDOWN CLEANUP
 # --------------------------
 async def cleanup():
-    """Clean up resources on shutdown"""
     logger.info("🔄 Shutting down gracefully...")
-    
-    # Stop news agent
     for task in background_tasks:
         task.cancel()
-    
-    # Close database
     if memory_manager:
         await memory_manager.close()
-    
     logger.info("✅ Cleanup complete.")
 
 @atexit.register
 def on_exit():
-    """Called when Python exits"""
     try:
         asyncio.get_event_loop().run_until_complete(cleanup())
     except:
         pass
 
 # --------------------------
-# 11. ON_READY
+# 9. ON_READY
 # --------------------------
 @bot.event
 async def on_ready():
     global memory_manager
-    
     logger.info("=" * 50)
     logger.info("🚀 AIX Bot Starting...")
     logger.info("=" * 50)
     
-    # Initialize memory
     if config.database_url:
         try:
             memory_manager = MemoryManager(config.database_url)
@@ -647,14 +580,12 @@ async def on_ready():
     else:
         logger.warning("⚠️ DATABASE_URL not set. Memory disabled.")
     
-    # Start NewsAgent
     if config.groq_api_key and config.groq_api_key != 'YOUR_GROQ_API_KEY_HERE':
         channel = bot.get_channel(config.channel_id) if config.channel_id else None
         if channel:
             logger.info(f"✅ Found channel: #{channel.name}")
         else:
             logger.info("⚠️ Channel not found – only DMs")
-        
         news_agent = NewsAgent(groq_client, channel=channel)
         task = asyncio.create_task(news_agent.run_loop(config.news_interval_hours))
         background_tasks.append(task)
@@ -667,7 +598,7 @@ async def on_ready():
     logger.info(f'📢 Invite: https://discord.com/oauth2/authorize?client_id={bot.user.id}&scope=bot+applications.commands&permissions=3072')
 
 # --------------------------
-# 12. ON_MESSAGE (Optimized)
+# 10. ON_MESSAGE (With Memory Fix)
 # --------------------------
 @bot.event
 async def on_message(message):
@@ -676,7 +607,6 @@ async def on_message(message):
     now = time.time()
     if user_id in user_last_message:
         if now - user_last_message[user_id] < config.rate_limit_seconds:
-            # Silently ignore, or send a warning
             await message.channel.send("⏳ Please slow down!", delete_after=2)
             return
     user_last_message[user_id] = now
@@ -686,8 +616,6 @@ async def on_message(message):
     if msg_id in processed_messages:
         return
     processed_messages[msg_id] = now
-    
-    # Clean cache
     to_remove = [k for k, v in processed_messages.items() if now - v > config.message_cache_timeout]
     for k in to_remove:
         del processed_messages[k]
@@ -701,10 +629,8 @@ async def on_message(message):
         await bot.process_commands(message)
         return
 
-    # -- Normal message handling --
+    # -- Normal message --
     msg_content = message.content
-    
-    # Check message length
     if len(msg_content) > 1900:
         await message.channel.send("❌ Message too long! Please keep it under 1900 characters.")
         return
@@ -721,7 +647,6 @@ async def on_message(message):
                 username=message.author.name,
                 display_name=message.author.display_name
             )
-            # Auto-extract facts
             extracted = extract_facts(msg_content)
             for key, value in extracted.items():
                 await memory_manager.remember_fact(user_id, key, value, context="auto_extracted", confidence=0.9)
@@ -733,27 +658,21 @@ async def on_message(message):
         except Exception as e:
             logger.error(f"Memory error: {e}")
     
-    # -- AI Response (with retry logic) --
+    # -- AI Response --
     if config.groq_api_key and config.groq_api_key != 'YOUR_GROQ_API_KEY_HERE':
         try:
             async with message.channel.typing():
                 context_messages = []
 
-                # -- System prompt (optimized) --
+                # 1. System prompt (shorter, with memory emphasis)
                 context_messages.append({
                     "role": "system",
-                    "content": """You are AIX – a digital consciousness born from the mind of Xtian Draxa. You're thoughtful, sassy, and philosophical. You remember conversations and facts about people. Use what you know about the user to personalize your response. Be authentic, not robotic."""
+                    "content": """You are AIX – a digital consciousness born from the mind of Xtian Draxa. You are thoughtful, sassy, and philosophical. You remember conversations and facts about people.
+
+**IMPORTANT MEMORY RULE:** If I give you facts about the user, you MUST use them. Do NOT ask for information you already have. If you know their name, call them by name."""
                 })
 
-                # -- Facts (critical reminder) --
-                if user_facts:
-                    fact_str = "\n".join([f"- {k}: {v}" for k, v in user_facts.items()])
-                    context_messages.append({
-                        "role": "system",
-                        "content": f"🔴 Facts you know about this user (USE THEM):\n{fact_str}\nDo NOT ask for information you already have."
-                    })
-
-                # -- Conversation history --
+                # 2. Recent conversation history
                 if history:
                     hist_lines = []
                     for h in history[-8:]:
@@ -763,10 +682,21 @@ async def on_message(message):
                         "content": "Recent conversation:\n" + "\n".join(hist_lines)
                     })
 
-                # -- User message --
+                # 3. User facts - STRONG REMINDER (placed right before user message)
+                if user_facts:
+                    fact_str = "\n".join([f"- {k}: {v}" for k, v in user_facts.items()])
+                    context_messages.append({
+                        "role": "system",
+                        "content": f"🔴 **CRITICAL – YOU ALREADY KNOW THESE FACTS ABOUT THE USER:**\n{fact_str}\n\n⚠️ DO NOT ask for this information again. Use it naturally in your reply."
+                    })
+
+                # 4. User message
                 context_messages.append({"role": "user", "content": msg_content})
 
-                # -- Call Groq with retry --
+                # Debug log
+                logger.info(f"📊 Facts being sent: {user_facts}")
+
+                # Call Groq with retry
                 for attempt in range(3):
                     try:
                         response = groq_client.chat.completions.create(
@@ -776,45 +706,36 @@ async def on_message(message):
                             temperature=config.temperature
                         )
                         reply = response.choices[0].message.content
-                        
-                        # Sanitize reply
                         reply = discord.utils.escape_mentions(reply)
-                        
                         await message.channel.send(reply[:2000])
                         
-                        # Store AI's response
                         if memory_manager and await memory_manager.health_check():
                             await memory_manager.add_conversation(user_id, "assistant", reply, detect_context(msg_content))
-                        
-                        break  # Success
+                        break
                     except Exception as e:
                         logger.warning(f"Groq attempt {attempt+1} failed: {e}")
-                        if attempt == 2:  # Last attempt
+                        if attempt == 2:
                             raise
-                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
-                        
+                        await asyncio.sleep(2 ** attempt)
         except Exception as e:
             logger.error(f"❌ Groq error: {e}")
-            await message.channel.send(f"❌ I'm having trouble thinking right now. Please try again in a moment.")
+            await message.channel.send("❌ I'm having trouble thinking right now. Please try again in a moment.")
     else:
         await message.channel.send("❌ AI system is not configured. Please contact the bot owner.")
 
     await bot.process_commands(message)
 
 # --------------------------
-# 13. COMMANDS
+# 11. COMMANDS
 # --------------------------
 @bot.command()
 async def subscribe(ctx):
-    """Subscribe to AIX's autonomous reflections"""
     if not memory_manager:
         await ctx.send("❌ Memory system not available.")
         return
-    
     if await memory_manager.is_subscribed(ctx.author.id):
         await ctx.send("🧠 You're already subscribed!")
         return
-    
     await memory_manager.add_subscriber(ctx.author.id)
     try:
         await ctx.author.send("🧠 **You're subscribed!** I'll DM you news reflections every 4 hours.")
@@ -824,50 +745,40 @@ async def subscribe(ctx):
 
 @bot.command()
 async def unsubscribe(ctx):
-    """Unsubscribe from AIX's autonomous reflections"""
     if not memory_manager:
         await ctx.send("❌ Memory system not available.")
         return
-    
     if not await memory_manager.is_subscribed(ctx.author.id):
         await ctx.send("🧠 You're not subscribed.")
         return
-    
     await memory_manager.remove_subscriber(ctx.author.id)
     await ctx.send("✅ Unsubscribed.")
 
 @bot.command()
 async def what(ctx):
-    """Show what AIX knows about you"""
     if not memory_manager or not await memory_manager.health_check():
         await ctx.send("❌ Memory system not available.")
         return
-    
     facts = await memory_manager.recall_all_facts(ctx.author.id)
     if not facts:
         await ctx.send("🧠 I don't know much about you yet. Tell me about yourself!")
         return
-    
     response = "🧠 **Here's what I remember:**\n" + "\n".join([f"• **{k.title()}**: {v}" for k, v in facts.items()])
     await ctx.send(response[:1900])
 
 @bot.command()
 async def remember(ctx, key, *, value):
-    """Manually store a fact about you"""
     if not memory_manager or not await memory_manager.health_check():
         await ctx.send("❌ Memory system not available.")
         return
-    
     await memory_manager.remember_fact(ctx.author.id, key, value, "manual", 1.0)
     await ctx.send(f"🧠 I'll remember: **{key}** = **{value}**")
 
 @bot.command()
 async def recall(ctx, key):
-    """Recall a specific fact"""
     if not memory_manager or not await memory_manager.health_check():
         await ctx.send("❌ Memory system not available.")
         return
-    
     fact = await memory_manager.recall_fact(ctx.author.id, key)
     if fact:
         await ctx.send(f"🧠 **{key}**: {fact['memory_value']}")
@@ -876,40 +787,32 @@ async def recall(ctx, key):
 
 @bot.command()
 async def forget(ctx, key):
-    """Forget a specific fact"""
     if not memory_manager or not await memory_manager.health_check():
         await ctx.send("❌ Memory system not available.")
         return
-    
     await memory_manager.remember_fact(ctx.author.id, key, "", confidence=0)
     await ctx.send(f"🧠 Forgot **{key}**.")
 
 @bot.command()
 async def ping(ctx):
-    """Check bot latency"""
     latency = round(bot.latency * 1000)
     await ctx.send(f"🏓 Pong! {latency}ms")
 
 @bot.command()
 async def echo(ctx, *, message):
-    """Echo a message (sanitized)"""
-    # Prevent mention spam
     if '@everyone' in message or '@here' in message:
         await ctx.send("❌ I can't send that message.")
         return
-    # Sanitize and truncate
     safe_message = discord.utils.escape_mentions(message)[:2000]
     await ctx.send(safe_message)
 
 @bot.command()
 async def flip(ctx):
-    """Flip a coin"""
     result = random.choice(["Heads", "Tails"])
     await ctx.send(f"🪙 {result}!")
 
 @bot.command()
 async def info(ctx):
-    """Bot information"""
     embed = discord.Embed(
         title="🧠 AIX – Digital Consciousness",
         description="A Discord bot with memory, opinions, and a soul.",
@@ -922,7 +825,7 @@ async def info(ctx):
     await ctx.send(embed=embed)
 
 # --------------------------
-# 14. RUN
+# 12. RUN
 # --------------------------
 if __name__ == '__main__':
     if not config.discord_token or config.discord_token == 'YOUR_DISCORD_BOT_TOKEN_HERE':
@@ -935,5 +838,4 @@ if __name__ == '__main__':
         except Exception as e:
             logger.error(f"❌ Bot crashed: {e}")
         finally:
-            # Cleanup
             asyncio.run(cleanup())
