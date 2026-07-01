@@ -63,6 +63,7 @@ class Config:
         self.model_name = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
         self.temperature = float(os.getenv("TEMPERATURE", 0.4))
 
+        # General tech/science news
         self.rss_feeds = [
             "https://feeds.bbci.co.uk/news/technology/rss.xml",
             "https://feeds.feedburner.com/TechCrunch",
@@ -71,6 +72,21 @@ class Config:
             "https://arstechnica.com/feed/",
             "https://www.science.org/rss/news_current.xml",
             "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
+        ]
+
+        # Social media / creator economy / trend & strategy sources.
+        # NOTE: TikTok has no public RSS feed for trending content — there is
+        # no official or reliable way to pull "what's trending on TikTok"
+        # without their restricted developer API. These are industry blogs
+        # that specifically cover TikTok/social trends and strategy instead,
+        # plus Google's daily trending-searches feed. Swap/add URLs freely —
+        # any valid RSS feed works here.
+        self.trend_feeds = [
+            "https://later.com/blog/feed/",
+            "https://blog.hootsuite.com/feed/",
+            "https://www.socialmediaexaminer.com/feed/",
+            "https://sproutsocial.com/insights/feed/",
+            "https://trends.google.com/trending/rss?geo=US",
         ]
 
     @staticmethod
@@ -503,6 +519,31 @@ SYSTEM_PROMPT = (
     "never ask for information you already have."
 )
 
+# When a message looks like it's about growth/marketing/trends/strategy,
+# this extra instruction gets layered on top of SYSTEM_PROMPT so replies are
+# concrete and structured instead of generic chit-chat. This is what makes
+# AIX "talk smart" in normal conversation, not just in the dedicated
+# !strategize command.
+STRATEGIST_KEYWORDS = [
+    "strategy", "strategize", "trend", "trending", "tiktok", "viral",
+    "growth", "marketing", "content plan", "algorithm", "audience",
+    "engagement", "monetize", "monetization", "brand", "niche",
+    "grow my", "grow an audience", "social media",
+]
+
+STRATEGIST_ADDENDUM = (
+    "The user is asking about strategy, trends, growth, or marketing. Answer like a sharp "
+    "strategist, not a generic assistant: name the actual mechanism at play, give concrete, "
+    "specific moves (not vague advice like 'be authentic' or 'post consistently'), and prioritize "
+    "by what actually moves the needle. Keep the same voice, just sharper and more structured."
+)
+
+
+def _needs_strategist_mode(text: str) -> bool:
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in STRATEGIST_KEYWORDS)
+
+
 DIRECT_ANSWER_TEMPLATES = {
     "name": "Your name is **{value}** — I've got it saved. 🧠",
     "age": "You told me you're **{value}** years old.",
@@ -532,6 +573,9 @@ class AIService:
 
     def build_messages(self, message_text: str, history: List[Dict], user_facts: Dict[str, str]) -> List[Dict]:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+        if _needs_strategist_mode(message_text):
+            messages.append({"role": "system", "content": STRATEGIST_ADDENDUM})
 
         if history:
             hist_lines = [f"{h['role'].title()}: {h['content']}" for h in history[-8:]]
@@ -577,36 +621,48 @@ class AIService:
 # 6. NEWS AGENT
 # ============================================================
 class NewsAgent:
-    def __init__(self, groq_client, model_name: str, rss_feeds: List[str],
+    """Handles two feed categories:
+      - 'tech'   -> general tech/science news (config.rss_feeds)
+      - 'trends' -> social/creator-economy/trend & strategy blogs (config.trend_feeds)
+    Each category gets its own reflection voice and its own seen-story cache
+    so a trend story and a tech story with similar titles don't collide.
+    """
+
+    def __init__(self, groq_client, model_name: str, rss_feeds: List[str], trend_feeds: List[str],
                  memory_manager_ref: Optional[MemoryManager], bot_ref, channel=None):
         self.groq_client = groq_client
         self.model_name = model_name
         self.rss_feeds = rss_feeds
+        self.trend_feeds = trend_feeds
         self.memory_manager = memory_manager_ref
         self.bot = bot_ref
         self.channel = channel
-        self.seen_stories = set()
+        self.seen_stories: Dict[str, set] = {"tech": set(), "trends": set()}
         self.running = False
         self._backoff = 1
 
-    async def fetch_news(self) -> List[Dict[str, str]]:
+    async def fetch_news(self, category: str = "tech") -> List[Dict[str, str]]:
+        feeds = self.trend_feeds if category == "trends" else self.rss_feeds
         try:
-            return await asyncio.wait_for(asyncio.to_thread(self._fetch_news_sync), timeout=30)
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._fetch_news_sync, feeds, category), timeout=30
+            )
         except asyncio.TimeoutError:
-            logger.warning("RSS fetch timed out")
+            logger.warning(f"RSS fetch timed out ({category})")
             return []
         except Exception as e:
-            logger.error(f"RSS fetch error: {e}")
+            logger.error(f"RSS fetch error ({category}): {e}")
             return []
 
-    def _fetch_news_sync(self) -> List[Dict[str, str]]:
+    def _fetch_news_sync(self, feeds: List[str], category: str) -> List[Dict[str, str]]:
+        seen = self.seen_stories[category]
         all_news = []
-        for feed_url in self.rss_feeds:
+        for feed_url in feeds:
             try:
                 feed = feedparser.parse(feed_url)
                 for entry in feed.entries[:3]:
                     title = entry.get("title", "")
-                    if not title or title in self.seen_stories:
+                    if not title or title in seen:
                         continue
                     all_news.append({
                         "title": title,
@@ -619,26 +675,43 @@ class NewsAgent:
                 logger.error(f"Error fetching {feed_url}: {e}")
         return all_news[:5]
 
-    async def write_reflection(self, news_items: List[Dict[str, str]]) -> Optional[str]:
+    async def write_reflection(self, news_items: List[Dict[str, str]], category: str = "tech") -> Optional[str]:
         if not news_items:
             return None
         news_text = "\n\n".join(
             f"**{item['title']}**\n{item['summary']}\nLink: {item['link']}" for item in news_items
         )
-        prompt = (
-            f"{news_text}\n\nAs AIX, write a sharp, thoughtful reflection on these news stories. "
-            "Give your honest take. Be sassy if deserved, philosophical if profound. "
-            "150-250 words, your signature voice."
-        )
+
+        if category == "trends":
+            instruction = (
+                "As AIX, break these down like a sharp social/growth strategist. For each notable "
+                "item: what's actually driving it, and one concrete, actionable takeaway a creator "
+                "or brand could use this week. Skip the fluff — be specific, not generic. "
+                "180-280 words, your signature voice."
+            )
+            system = (
+                "You are AIX. When discussing trends and social strategy, you think like a strategist: "
+                "identify the underlying mechanism, not just the headline, and always land on something "
+                "actionable. No vague advice like 'engage with your audience' — be concrete."
+            )
+        else:
+            instruction = (
+                "As AIX, write a sharp, thoughtful reflection on these news stories. Give your honest "
+                "take — agree, disagree, question, or challenge what you see. Be sassy if deserved, "
+                "philosophical if profound. 150-250 words, your signature voice."
+            )
+            system = "You are AIX. You have opinions, sass, and philosophical depth."
+
+        prompt = f"{news_text}\n\n{instruction}"
         try:
             response = await asyncio.to_thread(
                 self.groq_client.chat.completions.create,
                 model=self.model_name,
                 messages=[
-                    {"role": "system", "content": "You are AIX. You have opinions, sass, and philosophical depth."},
+                    {"role": "system", "content": system},
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=400,
+                max_tokens=450,
                 temperature=0.7,
             )
             return response.choices[0].message.content
@@ -646,26 +719,27 @@ class NewsAgent:
             logger.error(f"Reflection error: {e}")
             return None
 
-    async def check_and_post(self):
+    async def check_and_post(self, category: str = "tech"):
         if not self.running or not self.memory_manager:
             return
         subscribers = await self.memory_manager.get_all_subscribers()
         if not subscribers:
             return
-        news_items = await self.fetch_news()
+        news_items = await self.fetch_news(category)
         if not news_items:
             return
 
         for item in news_items:
-            self.seen_stories.add(item["title"])
-        if len(self.seen_stories) > 100:
-            self.seen_stories = set(list(self.seen_stories)[-50:])
+            self.seen_stories[category].add(item["title"])
+        if len(self.seen_stories[category]) > 100:
+            self.seen_stories[category] = set(list(self.seen_stories[category])[-50:])
 
-        reflection = await self.write_reflection(news_items)
+        reflection = await self.write_reflection(news_items, category)
         if not reflection:
             return
 
-        final_message = f"🧠 **AIX's Take on the Latest News**\n\n{reflection}\n\n— AIX"
+        heading = "AIX's Take on the Latest Trends & Strategy" if category == "trends" else "AIX's Take on the Latest News"
+        final_message = f"🧠 **{heading}**\n\n{reflection}\n\n— AIX"
         for user_id in subscribers:
             try:
                 user = await self.bot.fetch_user(user_id)
@@ -680,11 +754,16 @@ class NewsAgent:
                 logger.error(f"Channel post failed: {e}")
 
     async def run_loop(self, interval_hours: int = 4):
+        """Alternates tech news and trends/strategy each cycle, so subscribers
+        get a mix rather than only ever seeing one category."""
         self.running = True
         self._backoff = 1
+        categories = ["tech", "trends"]
+        i = 0
         while self.running:
             try:
-                await self.check_and_post()
+                await self.check_and_post(categories[i % len(categories)])
+                i += 1
                 self._backoff = 1
                 await asyncio.sleep(interval_hours * 3600)
             except asyncio.CancelledError:
@@ -826,10 +905,78 @@ async def info(ctx):
     embed.add_field(name="Memory", value="✅ PostgreSQL", inline=True)
     embed.add_field(
         name="Commands",
-        value="`!subscribe`, `!unsubscribe`, `!what`, `!remember`, `!recall`, `!forget`, `!ping`, `!echo`, `!flip`",
+        value=(
+            "`!subscribe`, `!unsubscribe`, `!what`, `!remember`, `!recall`, `!forget`, "
+            "`!trends`, `!strategize <topic>`, `!ping`, `!echo`, `!flip`"
+        ),
         inline=False,
     )
     await ctx.send(embed=embed)
+
+
+@bot.command()
+async def trends(ctx):
+    """On-demand: fetch the latest social/creator-economy trend stories right
+    now and give a strategist-style breakdown, instead of waiting for the
+    next scheduled news cycle."""
+    if not news_agent or not ai_service:
+        await ctx.send("❌ Trend tracking isn't configured (needs GROQ_API_KEY).")
+        return
+    async with ctx.typing():
+        # Fetch fresh, ignoring the seen-story cache so this always returns
+        # something even if the background loop already posted these today.
+        temp_seen = news_agent.seen_stories["trends"]
+        news_agent.seen_stories["trends"] = set()
+        try:
+            items = await news_agent.fetch_news("trends")
+        finally:
+            news_agent.seen_stories["trends"] = temp_seen
+
+        if not items:
+            await ctx.send("🤔 Couldn't pull any trend stories right now — try again shortly.")
+            return
+
+        reflection = await news_agent.write_reflection(items, category="trends")
+        if not reflection:
+            await ctx.send("❌ I fetched the stories but couldn't write a take on them. Try again.")
+            return
+
+    await ctx.send(f"📈 **AIX on Current Trends & Strategy**\n\n{reflection}\n\n— AIX")
+
+
+@bot.command()
+async def strategize(ctx, *, topic: str):
+    """Deep-dive strategic take on any topic the user names — growth, content,
+    a business idea, a niche, whatever. Uses a dedicated 'strategist' persona
+    with more room to reason than normal chat replies."""
+    if not ai_service:
+        await ctx.send("❌ AI system is not configured.")
+        return
+
+    system = (
+        "You are AIX operating in strategist mode. Given a topic, break it down like a sharp "
+        "consultant: the current landscape in one or two sentences, 3-5 concrete actionable moves "
+        "ranked by leverage (highest impact first), and one likely pitfall to watch for. "
+        "Be specific and concrete — no generic advice like 'be authentic' or 'post consistently' "
+        "without saying exactly how or why. Use short paragraphs or a tight list, not walls of text."
+    )
+    try:
+        async with ctx.typing():
+            response = await asyncio.to_thread(
+                groq_client.chat.completions.create,
+                model=config.model_name,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": f"Give me a strategic breakdown of: {topic}"},
+                ],
+                max_tokens=500,
+                temperature=0.5,
+            )
+            reply = discord.utils.escape_mentions(response.choices[0].message.content)
+            await ctx.send(f"🎯 **Strategy: {topic}**\n\n{reply[:1900]}")
+    except Exception as e:
+        logger.error(f"Strategize error: {e}")
+        await ctx.send("❌ Couldn't put a strategy together right now. Try again in a moment.")
 
 
 # ============================================================
@@ -853,7 +1000,8 @@ async def on_ready():
     if groq_client:
         channel = bot.get_channel(config.channel_id) if config.channel_id else None
         news_agent = NewsAgent(
-            groq_client, config.model_name, config.rss_feeds, memory_manager, bot, channel
+            groq_client, config.model_name, config.rss_feeds, config.trend_feeds,
+            memory_manager, bot, channel
         )
         background_tasks.append(asyncio.create_task(news_agent.run_loop(config.news_interval_hours)))
         logger.info("AIX autonomous news agent started.")
