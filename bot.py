@@ -14,14 +14,7 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
-print("=" * 50)
-print("🔍 DEBUG: Environment Variables")
-print("=" * 50)
-print(f"✅ DISCORD_TOKEN: {'SET' if TOKEN else 'MISSING'}")
-print(f"✅ GROQ_API_KEY: {'SET' if GROQ_API_KEY else 'MISSING'}")
-print(f"   Value: {GROQ_API_KEY[:10] + '...' if GROQ_API_KEY else 'None'}")
-print(f"✅ DATABASE_URL: {'SET' if DATABASE_URL else 'MISSING'}")
-print("=" * 50)
+
 # --------------------------------------------
 # CONFIGURATION (from .env)
 # --------------------------------------------
@@ -30,6 +23,16 @@ GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 DATABASE_URL = os.getenv('DATABASE_URL')
 CHANNEL_ID = int(os.getenv('CHANNEL_ID', 0)) if os.getenv('CHANNEL_ID') else None
 OWNER_ID = int(os.getenv('OWNER_ID', 0)) if os.getenv('OWNER_ID') else None
+
+
+print("=" * 50)
+print("🔍 DEBUG: Environment Variables")
+print("=" * 50)
+print(f"✅ DISCORD_TOKEN: {'SET' if TOKEN else 'MISSING'}")
+print(f"✅ GROQ_API_KEY: {'SET' if GROQ_API_KEY else 'MISSING'}")
+print(f"   Value: {GROQ_API_KEY[:10] + '...' if GROQ_API_KEY else 'None'}")
+print(f"✅ DATABASE_URL: {'SET' if DATABASE_URL else 'MISSING'}")
+print("=" * 50)
 # Message cache to prevent duplicate processing
 processed_messages = set()
 # --------------------------------------------
