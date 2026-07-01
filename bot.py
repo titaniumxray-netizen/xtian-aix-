@@ -14,7 +14,14 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
-
+print("=" * 50)
+print("🔍 DEBUG: Environment Variables")
+print("=" * 50)
+print(f"✅ DISCORD_TOKEN: {'SET' if TOKEN else 'MISSING'}")
+print(f"✅ GROQ_API_KEY: {'SET' if GROQ_API_KEY else 'MISSING'}")
+print(f"   Value: {GROQ_API_KEY[:10] + '...' if GROQ_API_KEY else 'None'}")
+print(f"✅ DATABASE_URL: {'SET' if DATABASE_URL else 'MISSING'}")
+print("=" * 50)
 # --------------------------------------------
 # CONFIGURATION (from .env)
 # --------------------------------------------
@@ -422,15 +429,21 @@ async def on_ready():
     global memory_manager
     # Initialize memory
     if DATABASE_URL:
-        memory_manager = MemoryManager(DATABASE_URL)
-        if await memory_manager.initialize():
-            print("✅ Memory system ready.")
-        else:
-            print("⚠️ Memory system disabled.")
+        try:
+            memory_manager = MemoryManager(DATABASE_URL)
+            if await memory_manager.initialize():
+                print("✅ Memory system ready.")
+            else:
+                print("⚠️ Memory system disabled.")
+                memory_manager = None
+        except Exception as e:
+            print(f"❌ Database error: {e}")
+            memory_manager = None
     else:
         print("⚠️ DATABASE_URL not set. Memory disabled.")
+        memory_manager = None
 
-    # Start NewsAgent
+    # Start NewsAgent (same as before)
     if GROQ_API_KEY and GROQ_API_KEY != 'YOUR_GROQ_API_KEY_HERE':
         channel = bot.get_channel(CHANNEL_ID) if CHANNEL_ID else None
         if channel:
@@ -446,7 +459,6 @@ async def on_ready():
     await bot.tree.sync()
     print(f'✅ Bot online as {bot.user} (ID: {bot.user.id})')
     print(f'📢 Invite: https://discord.com/oauth2/authorize?client_id={bot.user.id}&scope=bot+applications.commands&permissions=3072')
-
 @bot.event
 async def on_message(message):
     # -- Prevent duplicate processing --
@@ -470,7 +482,7 @@ async def on_message(message):
     msg_content = message.content
 
     # --- Memory: store user info and conversation ---
-    if memory_manager:
+    if memory_manager and memory_manager.pool:
         try:
             await memory_manager.get_user(user_id)
             await memory_manager.update_user(
